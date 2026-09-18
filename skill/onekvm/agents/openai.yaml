@@ -1,0 +1,4 @@
+interface:
+  display_name: "One-KVM"
+  short_description: "Inspect screens and control computers through One-KVM"
+  default_prompt: "Use $onekvm to inspect the configured remote computer and perform the requested action."
