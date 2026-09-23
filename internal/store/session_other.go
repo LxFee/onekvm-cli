@@ -27,3 +27,18 @@ func DeleteSession(home, id string) error {
 	return err
 }
 func SessionBackend() string { return "system keyring (no plaintext fallback)" }
+
+func SavePassword(home, id string, password []byte) error {
+	return keyring.Set(service(home), "password:"+id, string(password))
+}
+func LoadPassword(home, id string) ([]byte, error) {
+	v, err := keyring.Get(service(home), "password:"+id)
+	return []byte(v), err
+}
+func DeletePassword(home, id string) error {
+	err := keyring.Delete(service(home), "password:"+id)
+	if errors.Is(err, keyring.ErrNotFound) {
+		return nil
+	}
+	return err
+}

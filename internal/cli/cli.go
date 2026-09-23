@@ -87,11 +87,31 @@ func (a *app) connect() (*client.Client, error) {
 		err = c.Login(a.ctx, p, otp)
 		return c, err
 	}
-	b, err := store.LoadSession(a.home, store.Identity(c.Target))
+	id := store.Identity(c.Target)
+	password, passwordErr := store.LoadPassword(a.home, id)
+	if passwordErr == nil && len(password) != 0 {
+		c.Reauthenticate = func(ctx context.Context) error {
+			if err := c.Login(ctx, string(password), otp); err != nil {
+				return err
+			}
+			b, err := json.Marshal(c.Session)
+			if err != nil {
+				return err
+			}
+			return store.SaveSession(a.home, id, b)
+		}
+	}
+	b, err := store.LoadSession(a.home, id)
 	if err != nil {
+		if c.Reauthenticate != nil {
+			return c, c.Reauthenticate(a.ctx)
+		}
 		return nil, &fault{3, "no readable saved session; run onekvm login or provide ONEKVM_PASSWORD"}
 	}
 	if err = c.Restore(b); err != nil {
+		if c.Reauthenticate != nil {
+			return c, c.Reauthenticate(a.ctx)
+		}
 		return nil, &fault{3, err.Error()}
 	}
 	return c, nil
@@ -131,11 +151,11 @@ func (a *app) command() *cobra.Command {
 	r.PersistentFlags().StringVar(&a.url, "url", "", "One-KVM origin, e.g. http://host:8080")
 	r.PersistentFlags().StringVar(&a.user, "user", "", "One-KVM username")
 	r.PersistentFlags().BoolVar(&a.json, "json", false, "compact JSON output, including errors on stderr")
-	r.AddCommand(a.targets(), a.login(), a.logout(), a.status(false), a.status(true), a.snapshot(), a.mouse(), a.key(), a.typing())
+	r.AddCommand(a.targets(), a.login(), a.logout(), a.status(false), a.status(true), a.stream(), a.snapshot(), a.mouse(), a.key(), a.typing())
 	return r
 }
 func (a *app) targets() *cobra.Command {
-	r := &cobra.Command{Use: "target", Short: "Manage connection addresses; never store passwords"}
+	r := &cobra.Command{Use: "target", Short: "Manage connection addresses and target credentials"}
 	add := &cobra.Command{Use: "add NAME", Args: cobra.ExactArgs(1), Short: "Add a target or update its URL/user", RunE: func(_ *cobra.Command, args []string) error {
 		name := args[0]
 		if !store.ValidName(name) {
@@ -150,7 +170,11 @@ func (a *app) targets() *cobra.Command {
 		}
 		t := store.Target{URL: u, User: a.user}
 		if old, ok := a.cfg.Targets[name]; ok && old != t {
-			if err = store.DeleteSession(a.home, store.Identity(old)); err != nil {
+			id := store.Identity(old)
+			if err = store.DeleteSession(a.home, id); err != nil {
+				return err
+			}
+			if err = store.DeletePassword(a.home, id); err != nil {
 				return err
 			}
 		}
@@ -175,12 +199,16 @@ func (a *app) targets() *cobra.Command {
 		}
 		return a.print(map[string]string{"default_target": args[0]})
 	}})
-	r.AddCommand(&cobra.Command{Use: "remove NAME", Args: cobra.ExactArgs(1), Short: "Remove a target and its local session", RunE: func(_ *cobra.Command, args []string) error {
+	r.AddCommand(&cobra.Command{Use: "remove NAME", Args: cobra.ExactArgs(1), Short: "Remove a target and its local credentials", RunE: func(_ *cobra.Command, args []string) error {
 		t, ok := a.cfg.Targets[args[0]]
 		if !ok {
 			return &fault{2, "unknown target"}
 		}
-		if err := store.DeleteSession(a.home, store.Identity(t)); err != nil {
+		id := store.Identity(t)
+		if err := store.DeleteSession(a.home, id); err != nil {
+			return err
+		}
+		if err := store.DeletePassword(a.home, id); err != nil {
 			return err
 		}
 		delete(a.cfg.Targets, args[0])
@@ -195,7 +223,8 @@ func (a *app) targets() *cobra.Command {
 	return r
 }
 func (a *app) login() *cobra.Command {
-	return &cobra.Command{Use: "login", Args: cobra.NoArgs, Short: "Log in; save only an encrypted/keyring session", RunE: func(_ *cobra.Command, _ []string) error {
+	var rememberPassword bool
+	cmd := &cobra.Command{Use: "login", Args: cobra.NoArgs, Short: "Log in and save an encrypted/keyring session", RunE: func(_ *cobra.Command, _ []string) error {
 		c, err := a.newClient()
 		if err != nil {
 			return err
@@ -217,8 +246,15 @@ func (a *app) login() *cobra.Command {
 			}
 			return &fault{3, "login succeeded but secure session storage is unavailable; session revoked. Use ONEKVM_PASSWORD per command instead"}
 		}
-		return a.print(map[string]any{"authenticated": true, "url": c.Target.URL, "user": c.Target.User, "session_storage": store.SessionBackend()})
+		if rememberPassword {
+			if err = store.SavePassword(a.home, store.Identity(c.Target), []byte(p)); err != nil {
+				return &fault{3, "login succeeded but password could not be saved securely; automatic login is unavailable"}
+			}
+		}
+		return a.print(map[string]any{"authenticated": true, "url": c.Target.URL, "user": c.Target.User, "session_storage": store.SessionBackend(), "password_saved_this_login": rememberPassword})
 	}}
+	cmd.Flags().BoolVar(&rememberPassword, "remember-password", false, "store the password in DPAPI/keyring for automatic login when the session expires")
+	return cmd
 }
 func (a *app) logout() *cobra.Command {
 	return &cobra.Command{Use: "logout", Args: cobra.NoArgs, Short: "Revoke saved session and remove local credentials", RunE: func(_ *cobra.Command, _ []string) error {
@@ -237,6 +273,9 @@ func (a *app) logout() *cobra.Command {
 			}
 		}
 		if err = store.DeleteSession(a.home, id); err != nil {
+			return err
+		}
+		if err = store.DeletePassword(a.home, id); err != nil {
 			return err
 		}
 		if revokeErr != nil && !client.IsAuth(revokeErr) {
@@ -276,14 +315,16 @@ func (a *app) status(capabilities bool) *cobra.Command {
 			}
 			ready := h.Available && h.Online && functionErr == nil
 			result["hid_functions"] = functions
+			_, keepAliveSupported := video["keep_alive"].(bool)
 			result["capabilities"] = []map[string]any{
 				{"command": "status", "available": true},
+				{"command": "stream", "actions": map[string]bool{"start": keepAliveSupported, "stop": true, "status": true}, "start_mode": "mjpeg"},
 				{"command": "snapshot", "supported": true, "availability": "capture-dependent; starts capture on demand"},
-				{"command": "mouse", "actions": map[string]bool{"move": ready && functions.Absolute, "click": ready && functions.Relative, "scroll": ready && functions.Relative}},
+				{"command": "mouse", "actions": map[string]bool{"move": ready && functions.Absolute, "click": ready && functions.Absolute && functions.ButtonsAndScroll, "scroll": ready && functions.ButtonsAndScroll}},
 				{"command": "key", "available": ready && functions.Keyboard, "chords": true},
 				{"command": "type", "available": ready && functions.Keyboard, "layout": "US ASCII; LF and tab; Unicode rejected before sending"},
 			}
-			if h.Backend == "otg" {
+			if h.Backend == "otg" && !h.PreservesPointer {
 				result["pointer_caveat"] = "One-KVM 0.2.6 resets the absolute pointer to the origin when a HID connection closes. Use a single mouse click command with coordinates; standalone move is transient."
 			}
 			result["hid_delivery"] = "WebSocket transport only; execution must be verified from a subsequent screenshot"
@@ -292,6 +333,44 @@ func (a *app) status(capabilities bool) *cobra.Command {
 		return a.print(result)
 	}}
 }
+func (a *app) stream() *cobra.Command {
+	r := &cobra.Command{Use: "stream", Short: "Keep capture active until stopped, or inspect capture status", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error { return cmd.Help() }}
+	for _, action := range []string{"start", "stop", "status"} {
+		r.AddCommand(&cobra.Command{Use: action, Args: cobra.NoArgs, RunE: func(_ *cobra.Command, _ []string) error {
+			c, err := a.connect()
+			if err != nil {
+				return err
+			}
+			var state map[string]any
+			if err = c.JSON(a.ctx, "GET", "/stream/status", nil, &state); err != nil {
+				return err
+			}
+			if action == "status" {
+				return a.print(state)
+			}
+			path := "/stream/" + action
+			if action == "start" {
+				if _, ok := state["keep_alive"].(bool); !ok {
+					return errors.New("server does not support persistent capture; install the keep-alive server patch")
+				}
+				path += "?keep_alive=true"
+			}
+			var result map[string]any
+			if err = c.JSON(a.ctx, "POST", path, nil, &result); err != nil {
+				return err
+			}
+			if result["success"] != true {
+				return errors.New("server did not confirm stream " + action)
+			}
+			if action == "start" && result["keep_alive"] != true {
+				return errors.New("server did not confirm persistent capture")
+			}
+			return a.print(result)
+		}})
+	}
+	return r
+}
+
 func (a *app) snapshot() *cobra.Command {
 	var out string
 	c := &cobra.Command{Use: "snapshot --out FILE", Args: cobra.NoArgs, Short: "Save a screenshot; start capture when needed", RunE: func(_ *cobra.Command, _ []string) error {
@@ -368,15 +447,15 @@ func (a *app) send(frames [][]byte, needsAbs bool, delay time.Duration) error {
 		if frame[0] == 2 && frame[1] == 1 && !functions.Absolute {
 			return &fault{4, "absolute mouse USB function is disabled"}
 		}
-		if frame[0] == 2 && frame[1] >= 2 && !functions.Relative {
-			return &fault{4, "One-KVM requires the relative mouse USB function for buttons and scroll; this target has it disabled"}
+		if frame[0] == 2 && frame[1] >= 2 && !functions.ButtonsAndScroll {
+			return &fault{4, "target needs the relative mouse USB function or explicit absolute_mouse_buttons support for buttons and scroll"}
 		}
 	}
 	if err = c.SendHID(a.ctx, frames, delay); err != nil {
 		return err
 	}
 	result := map[string]any{"sent": true, "frames": len(frames), "execution_confirmed": false, "verification": "take a fresh screenshot to verify the result"}
-	if h.Backend == "otg" {
+	if h.Backend == "otg" && !h.PreservesPointer {
 		result["pointer_caveat"] = "One-KVM resets the absolute pointer on disconnect; standalone movement does not persist"
 	}
 	return a.print(result)

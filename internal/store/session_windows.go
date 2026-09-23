@@ -61,3 +61,25 @@ func DeleteSession(home, id string) error {
 	return err
 }
 func SessionBackend() string { return "Windows DPAPI (current user)" }
+
+func SavePassword(home, id string, password []byte) error {
+	b, err := crypt(password, false)
+	if err != nil {
+		return err
+	}
+	return AtomicWrite(filepath.Join(home, "credentials", id+".dpapi"), b)
+}
+func LoadPassword(home, id string) ([]byte, error) {
+	b, err := os.ReadFile(filepath.Join(home, "credentials", id+".dpapi"))
+	if err != nil {
+		return nil, err
+	}
+	return crypt(b, true)
+}
+func DeletePassword(home, id string) error {
+	err := os.Remove(filepath.Join(home, "credentials", id+".dpapi"))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	return err
+}

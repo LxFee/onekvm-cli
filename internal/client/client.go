@@ -19,12 +19,16 @@ import (
 const CookieName = "one_kvm_session"
 
 type APIError struct {
-	Status int
-	Path   string
+	Status  int
+	Path    string
+	Message string
 }
 
 func (e *APIError) Error() string {
 	if e.Status == 401 || e.Status == 403 {
+		if e.Message == "Logged in elsewhere" || e.Message == "Session expired" {
+			return e.Message + "; run onekvm login"
+		}
 		return "authentication expired or rejected; run onekvm login"
 	}
 	return fmt.Sprintf("One-KVM returned HTTP %d for %s", e.Status, e.Path)
@@ -37,9 +41,10 @@ type Session struct {
 	Expires time.Time `json:"expires"`
 }
 type Client struct {
-	Target  store.Target
-	HTTP    *http.Client
-	Session Session
+	Target         store.Target
+	HTTP           *http.Client
+	Session        Session
+	Reauthenticate func(context.Context) error
 }
 
 func New(t store.Target) *Client {
@@ -60,6 +65,17 @@ func (c *Client) Restore(b []byte) error {
 	return nil
 }
 func (c *Client) request(ctx context.Context, method, path string, data any) ([]byte, http.Header, error) {
+	b, h, err := c.requestOnce(ctx, method, path, data)
+	var apiErr *APIError
+	if c.Reauthenticate != nil && path != "/auth/login" && path != "/auth/login/totp" && errors.As(err, &apiErr) && apiErr.Status == 401 && (apiErr.Message == "Session expired" || apiErr.Message == "Logged in elsewhere") {
+		if err = c.Reauthenticate(ctx); err != nil {
+			return nil, nil, fmt.Errorf("automatic login failed: %w", err)
+		}
+		return c.requestOnce(ctx, method, path, data)
+	}
+	return b, h, err
+}
+func (c *Client) requestOnce(ctx context.Context, method, path string, data any) ([]byte, http.Header, error) {
 	var body io.Reader
 	if data != nil {
 		b, err := json.Marshal(data)
@@ -84,7 +100,11 @@ func (c *Client) request(ctx context.Context, method, path string, data any) ([]
 	}
 	defer r.Body.Close()
 	if r.StatusCode < 200 || r.StatusCode >= 300 {
-		return nil, nil, &APIError{r.StatusCode, path}
+		var body struct {
+			Message string `json:"message"`
+		}
+		_ = json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&body)
+		return nil, nil, &APIError{Status: r.StatusCode, Path: path, Message: body.Message}
 	}
 	b, err := io.ReadAll(io.LimitReader(r.Body, 16*1024*1024+1))
 	if len(b) > 16*1024*1024 {
@@ -137,14 +157,16 @@ func (c *Client) Login(ctx context.Context, password string, otp func() (string,
 }
 
 type HIDStatus struct {
-	Available   bool    `json:"available"`
-	Online      bool    `json:"online"`
-	Initialized bool    `json:"initialized"`
-	Backend     string  `json:"backend"`
-	Absolute    bool    `json:"supports_absolute_mouse"`
-	Resolution  []int   `json:"screen_resolution"`
-	Error       *string `json:"error"`
-	ErrorCode   *string `json:"error_code"`
+	Available        bool    `json:"available"`
+	Online           bool    `json:"online"`
+	Initialized      bool    `json:"initialized"`
+	Backend          string  `json:"backend"`
+	Absolute         bool    `json:"supports_absolute_mouse"`
+	AbsoluteButtons  bool    `json:"absolute_mouse_buttons"`
+	PreservesPointer bool    `json:"preserves_pointer_on_reset"`
+	Resolution       []int   `json:"screen_resolution"`
+	Error            *string `json:"error"`
+	ErrorCode        *string `json:"error_code"`
 }
 
 func (c *Client) HID(ctx context.Context) (HIDStatus, error) {
@@ -154,9 +176,9 @@ func (c *Client) HID(ctx context.Context) (HIDStatus, error) {
 }
 
 type HIDFunctions struct {
-	Keyboard bool `json:"keyboard"`
-	Relative bool `json:"mouse_buttons_and_scroll"`
-	Absolute bool `json:"absolute_mouse"`
+	Keyboard         bool `json:"keyboard"`
+	ButtonsAndScroll bool `json:"mouse_buttons_and_scroll"`
+	Absolute         bool `json:"absolute_mouse"`
 }
 
 // The status endpoint reports backend availability, not individual USB functions.
@@ -182,9 +204,9 @@ func (c *Client) Functions(ctx context.Context, h HIDStatus) (HIDFunctions, erro
 	case "legacy_keyboard":
 		return HIDFunctions{Keyboard: true}, nil
 	case "legacy_mouse_relative":
-		return HIDFunctions{Relative: true}, nil
+		return HIDFunctions{ButtonsAndScroll: true}, nil
 	case "custom":
-		return HIDFunctions{cfg.Functions.Keyboard, cfg.Functions.Relative, cfg.Functions.Absolute}, nil
+		return HIDFunctions{cfg.Functions.Keyboard, cfg.Functions.Relative || (cfg.Functions.Absolute && h.Absolute && h.AbsoluteButtons), cfg.Functions.Absolute}, nil
 	default:
 		return HIDFunctions{}, errors.New("unknown OTG function profile; cannot establish input capabilities")
 	}
@@ -231,9 +253,22 @@ func (c *Client) SendHID(ctx context.Context, frames [][]byte, delay time.Durati
 	h.Set("Cookie", (&http.Cookie{Name: CookieName, Value: c.Session.Token}).String())
 	d := websocket.Dialer{HandshakeTimeout: 10 * time.Second, Proxy: http.ProxyFromEnvironment}
 	ws, r, err := d.DialContext(ctx, u.String(), h)
+	if err != nil && r != nil && r.StatusCode == 401 && c.Reauthenticate != nil {
+		if r.Body != nil {
+			_ = r.Body.Close()
+		}
+		if loginErr := c.Reauthenticate(ctx); loginErr != nil {
+			return fmt.Errorf("automatic login failed: %w", loginErr)
+		}
+		h.Set("Cookie", (&http.Cookie{Name: CookieName, Value: c.Session.Token}).String())
+		ws, r, err = d.DialContext(ctx, u.String(), h)
+	}
 	if err != nil {
 		if r != nil && r.StatusCode == 401 {
-			return &APIError{401, "/ws/hid"}
+			if r.Body != nil {
+				_ = r.Body.Close()
+			}
+			return &APIError{Status: 401, Path: "/ws/hid"}
 		}
 		return err
 	}
