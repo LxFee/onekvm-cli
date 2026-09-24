@@ -58,7 +58,7 @@ onekvm logout
 - `key` 支持字母、数字、F1–F12、Enter/Esc/Tab、方向键及常用导航键；修饰键支持 Ctrl/Shift/Alt/Win（Meta/Cmd）。特殊符号键可用 `Equal`、`Minus` 等物理键名。
 - `type` 支持美式键盘布局 ASCII、换行和 Tab；最多 4096 字节。中文等字符会整段拒绝，不会输入到一半才报错。目标电脑需要处于英文/美式输入状态，Caps Lock 等状态会影响文字。`--stdin` 可避免把文本放进进程命令行；`--delay-ms` 默认 20，每次按下/释放之间等待。
 - 发送输入前检查 `hid.available` 和 `hid.online`。OTG 数据线未连接受控电脑时拒绝发送。
-- One-KVM 无逐条输入执行确认。`sent: true` 表示完成 WebSocket 发送和传输屏障，始终输出 `execution_confirmed: false`；随后截图判断操作结果。失败后不自动重发输入，以免重复点击/打字。
+- `sent: true` 表示完成 WebSocket 发送和传输屏障。需要观察目标状态时可另行截图；失败后不自动重发输入，以免重复点击/打字。
 - 控制期间避免其他浏览器或客户端同时发送输入。连接关闭时上游释放 HID 状态。
 
 ## Skill

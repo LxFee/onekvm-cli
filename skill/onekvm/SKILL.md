@@ -25,7 +25,7 @@ Configuration lives outside this Skill: Windows `%LOCALAPPDATA%/onekvm`, Linux `
    - `mouse scroll --delta -3` (negative down, positive up)
    - `key Ctrl+Shift+Esc` or `key Enter`
    - `type "text"`, `type --stdin`, or `type --file FILE`
-4. Capture another screenshot to verify the result before choosing the next action. Never equate `sent: true` with successful execution: the server provides no per-event acknowledgment. If a send fails, inspect current state before deciding whether to retry.
+4. Capture another screenshot when the next action depends on the current screen, such as navigating an unfamiliar menu or checking a command's result. `sent: true` means the input was sent. If a send fails, inspect current state before deciding whether to retry.
 
 Use the dimensions of the inspected screenshot for mouse coordinates, including when the viewing tool displays a scaled preview. Coordinates must refer to the original image.
 

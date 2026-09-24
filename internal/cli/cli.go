@@ -454,7 +454,7 @@ func (a *app) send(frames [][]byte, needsAbs bool, delay time.Duration) error {
 	if err = c.SendHID(a.ctx, frames, delay); err != nil {
 		return err
 	}
-	result := map[string]any{"sent": true, "frames": len(frames), "execution_confirmed": false, "verification": "take a fresh screenshot to verify the result"}
+	result := map[string]any{"sent": true, "frames": len(frames)}
 	if h.Backend == "otg" && !h.PreservesPointer {
 		result["pointer_caveat"] = "One-KVM resets the absolute pointer on disconnect; standalone movement does not persist"
 	}
