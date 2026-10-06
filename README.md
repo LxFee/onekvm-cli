@@ -1,10 +1,12 @@
 # One-KVM CLI
 
+为 [One-KVM](https://github.com/mofeng-git/One-KVM) 提供的独立 Go 命令行工具和 Agent Skill。One-KVM 服务器、固件及硬件使用说明由上游项目维护；本仓库提供连接和操作该设备的客户端。
+
 Go 原生 CLI，附带可安装的 `onekvm` Skill。支持 One-KVM 状态、截图和 USB 键鼠控制，适配 One-KVM 0.2.6（上游标签 `v260802`）。支持持续采集的 `stream start/stop/status`；不提供 `ai` 或 `config get` 命令。
 
 ## 使用
 
-从本仓库 Releases 下载对应平台的 Skill 压缩包，解压得到 `onekvm/`。Windows 程序位于 `scripts/onekvm.exe`，Linux 位于 `scripts/onekvm`；无需安装 Go。以下以程序已在 PATH 中为例，也可使用完整路径执行。
+从 [GitHub Releases](https://github.com/LxFee/onekvm-cli/releases) 下载对应平台的 Skill 压缩包，核对同一版本的 `SHA256SUMS` 后解压得到 `onekvm/`。Windows 程序位于 `scripts/onekvm.exe`，Linux 位于 `scripts/onekvm`；无需安装 Go。以下以程序已在 PATH 中为例，也可使用完整路径执行。
 
 ```sh
 onekvm target add home --url http://HOST:8080 --user USER
@@ -78,3 +80,9 @@ go build -o bin/onekvm ./cmd/onekvm
 测试包括 HTTP 登录与 TOTP、拒绝跨源重定向、会话绑定与过期、DPAPI 加密读写（Windows）、按需截图、二进制 HID WebSocket 交互、离线输入拒绝和输入编码。Linux 发布包为交叉编译，凭据库行为需要在目标 Linux 会话实测。
 
 接口依据：[One-KVM v260802](https://github.com/mofeng-git/One-KVM/tree/v260802)，尤其 `src/hid/datachannel.rs`、`src/hid/websocket.rs` 和 API 路由实现。
+
+## 许可证与上游
+
+Copyright (c) 2026 LxFee。项目采用 **GNU GPL v3.0**，与 [One-KVM 上游许可证](https://github.com/mofeng-git/One-KVM/blob/v260802/LICENSE) 保持一致，完整文本见 [LICENSE](LICENSE)。发行包包含本项目许可证和依赖的第三方许可声明。
+
+上游项目：[mofeng-git/One-KVM](https://github.com/mofeng-git/One-KVM)。本客户端通过 One-KVM 的 HTTP/WebSocket 接口工作；服务器版本和能力差异见上文，服务端问题请查阅上游文档。

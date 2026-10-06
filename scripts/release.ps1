@@ -28,6 +28,7 @@ try {
         $skill = Join-Path $stage 'onekvm'
         New-Item -ItemType Directory -Force (Join-Path $skill 'scripts') | Out-Null
         Copy-Item 'skill/onekvm/*' $skill -Recurse -Force
+        Copy-Item 'LICENSE' (Join-Path $skill 'LICENSE') -Force
         $executable = if ($env:GOOS -eq 'windows') { 'onekvm.exe' } else { 'onekvm' }
         & go build -trimpath -ldflags "-s -w -X github.com/LxFee/onekvm-cli/internal/cli.Version=$Version" -o (Join-Path $skill "scripts/$executable") ./cmd/onekvm
         if ($LASTEXITCODE -ne 0) { throw "Build failed: $label" }
